@@ -73,15 +73,26 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma_adc1;
+
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim4;
 
 /* USER CODE BEGIN PV */
-volatile uint16_t timers[9],indice=0;;
+volatile uint16_t timers[9],indice=0,cont=5000;
 volatile uint8_t pwm1=50,pwm2=50,buffer[64];
+volatile uint32_t adc_buf[6];
+volatile unsigned char retorno='0',encontrado='0';
 
 void control_motores();
+void seguidor1_process();
+void seguidor2_process();
+void seguidor3_process();
+void seguidor4_process();
+void sharp1_process();
+void sharp2_process();
 
 typedef enum{
 	  BUSCANDO=0,
@@ -89,10 +100,29 @@ typedef enum{
 	  ATACANDO_ADELANTE,
   }ST_MOTOR;
 
+typedef enum{
+	  S_ALERTA=0,
+	  S_ESTABLE,
+  }ST_SEGUIDOR;
+
+typedef enum{
+	  S_BUSCANDO=0,
+	  S_FIJO,
+  }ST_SHARP;
+
 ST_MOTOR st_motores=BUSCANDO;
+ST_SEGUIDOR st_seg1,st_seg2,st_seg3,st_seg4=S_ESTABLE;
+ST_SHARP st_sharp1,st_sharp2=S_BUSCANDO;
 
   enum {
   	TMOTORES=0,
+  	TSEG1,
+  	TSEG2,
+  	TSEG3,
+  	TSEG4,
+  	TSHARP1,
+  	TSHARP2,
+  	TADC,
   	TIMERS
   };
 /* USER CODE END PV */
@@ -100,9 +130,11 @@ ST_MOTOR st_motores=BUSCANDO;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_TIM4_Init(void);
+static void MX_ADC1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -117,6 +149,7 @@ static void MX_TIM4_Init(void);
   * @retval int
   */
 int main(void)
+
 {
   /* USER CODE BEGIN 1 */
 
@@ -140,18 +173,22 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_TIM1_Init();
   MX_USB_DEVICE_Init();
   MX_TIM3_Init();
   MX_TIM4_Init();
+  MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
  HAL_TIM_PWM_Start(&htim1,TIM_CHANNEL_2);
  HAL_TIM_PWM_Start(&htim4,TIM_CHANNEL_2);
  //HAL_TIM_Base_Start_IT(&htim2);
+ HAL_ADC_Start_DMA(&hadc1,(uint32_t*)adc_buf,6);
+ HAL_ADC_Start_IT(&hadc1);
  HAL_TIM_Base_Start_IT(&htim3);
  //HAL_TIM_Base_Start(&htim4);
  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2,pwm1);
- __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2,pwm2);
+ __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2,pwm2);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -161,7 +198,22 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    control_motores();
+	if(cont==0){
+		control_motores();
+		if(timers[TADC]==0){
+			HAL_ADC_Start_IT(&hadc1);
+			seguidor1_process();
+			seguidor2_process();
+			seguidor3_process();
+			if(retorno=='0'){
+				//if(encontrado=='0'||encontrado=='1')
+					sharp1_process();
+				//if(encontrado=='0'||encontrado=='2')
+					sharp2_process();
+			}
+			timers[TADC]=10;
+		}
+	}
     /*for (int i=0;i<100;i++){
 		__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2,i);
 		__HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2,i);
@@ -211,12 +263,98 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USB;
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_ADC|RCC_PERIPHCLK_USB;
+  PeriphClkInit.AdcClockSelection = RCC_ADCPCLK2_DIV6;
   PeriphClkInit.UsbClockSelection = RCC_USBCLKSOURCE_PLL_DIV1_5;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+  /**Common config 
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 6;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /**Configure Regular Channel 
+  */
+  sConfig.Channel = ADC_CHANNEL_0;
+  sConfig.Rank = ADC_REGULAR_RANK_1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_71CYCLES_5;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /**Configure Regular Channel 
+  */
+  sConfig.Channel = ADC_CHANNEL_1;
+  sConfig.Rank = ADC_REGULAR_RANK_2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /**Configure Regular Channel 
+  */
+  sConfig.Channel = ADC_CHANNEL_2;
+  sConfig.Rank = ADC_REGULAR_RANK_3;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /**Configure Regular Channel 
+  */
+  sConfig.Channel = ADC_CHANNEL_3;
+  sConfig.Rank = ADC_REGULAR_RANK_4;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /**Configure Regular Channel 
+  */
+  sConfig.Channel = ADC_CHANNEL_4;
+  sConfig.Rank = ADC_REGULAR_RANK_5;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /**Configure Regular Channel 
+  */
+  sConfig.Channel = ADC_CHANNEL_5;
+  sConfig.Rank = ADC_REGULAR_RANK_6;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
 }
 
 /**
@@ -398,6 +536,21 @@ static void MX_TIM4_Init(void)
 
 }
 
+/** 
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void) 
+{
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Channel1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
+
+}
+
 /**
   * @brief GPIO Initialization Function
   * @param None
@@ -442,7 +595,18 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
 			if(timers[i]!=0){
 				timers[i]--;
 			}
+		}if(cont>=1){
+			cont--;
 		}
+	}
+}
+
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc){
+	uint32_t val[6];
+	if(hadc->Instance==ADC1){
+		val[0]=adc_buf[0];val[1]=adc_buf[1];
+		val[2]=adc_buf[2];val[3]=adc_buf[3];
+		val[4]=adc_buf[4];val[6]=adc_buf[5];
 	}
 }
 
@@ -450,13 +614,15 @@ void control_motores(){
 	switch(st_motores){
 		case BUSCANDO:
 			if(timers[TMOTORES]==0){
-				if(pwm1<=80||pwm2>=20){
-					__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2,pwm1);
-					__HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2,pwm2);
+				if(pwm1<=99||pwm2>=1){
 					pwm1++;
 					pwm2--;
+					__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2,pwm1);
+					__HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2,pwm2);
+					/*pwm1++;
+					pwm2--;*/
 				}
-				timers[TMOTORES]=20;
+				timers[TMOTORES]=1;
 			}
 		break;
 		case ATACANDO_ATRAS:
@@ -484,6 +650,155 @@ void control_motores(){
 	}
 }
 
+void seguidor1_process(){
+		switch(st_seg1){
+			case S_ESTABLE:
+				//if(timers[TSEG1]==0){
+					if(adc_buf[1]<2500){
+						st_seg1=S_ALERTA;
+						st_motores=ATACANDO_ADELANTE;
+						timers[TSEG1]=500;
+						retorno='1';
+						pwm1=50;pwm2=50;
+					}
+				//}
+			break;
+			case S_ALERTA:
+				if(timers[TSEG1]==0){
+					if(adc_buf[1]<2500)
+						timers[TSEG1]=500;
+					else{
+						st_seg1=S_ESTABLE;
+						st_motores=BUSCANDO;
+						timers[TSEG1]=10;
+						retorno='0';
+						pwm1=50;pwm2=50;
+						//HAL_ADC_Stop(&hadc1);
+					}
+				}
+			break;
+		}
+}
+
+void seguidor2_process(){
+		switch(st_seg2){
+			case S_ESTABLE:
+				//if(timers[TSEG2]==0){
+					if(adc_buf[2]<2500){
+						st_seg2=S_ALERTA;
+						st_motores=ATACANDO_ADELANTE;
+						timers[TSEG2]=500;
+						retorno='1';
+						pwm1=50;pwm2=50;
+					}
+				//}
+			break;
+			case S_ALERTA:
+				if(timers[TSEG2]==0){
+					if(adc_buf[2]<2500)
+						timers[TSEG2]=500;
+					else{
+						st_seg2=S_ESTABLE;
+						st_motores=BUSCANDO;
+						timers[TSEG2]=10;
+						retorno='0';
+						pwm1=50;pwm2=50;
+						//HAL_ADC_Stop(&hadc1);
+					}
+				}
+			break;
+		}
+}
+
+void seguidor3_process(){
+		switch(st_seg3){
+			case S_ESTABLE:
+				if(timers[TSEG3]==0){
+					if(adc_buf[3]<2500){
+						st_seg3=S_ALERTA;
+						st_motores=ATACANDO_ATRAS;
+						timers[TSEG3]=500;
+						retorno='1';
+						pwm1=50;pwm2=50;
+					}
+				}
+			break;
+			case S_ALERTA:
+				if(timers[TSEG3]==0){
+					if(adc_buf[3]<2500)
+						timers[TSEG3]=500;
+					else{
+						st_seg3=S_ESTABLE;
+						st_motores=BUSCANDO;
+						timers[TSEG3]=10;
+						retorno='0';
+						pwm1=50;pwm2=50;
+						//HAL_ADC_Stop(&hadc1);
+					}
+				}
+			break;
+		}
+}
+
+void sharp1_process(){
+		switch(st_sharp1){
+			case S_BUSCANDO:
+				if(timers[TSHARP1]==0){
+					if(adc_buf[4]>2500){
+						st_sharp1=S_FIJO;
+						st_motores=ATACANDO_ATRAS;
+						timers[TSHARP1]=10;
+						encontrado='1';
+						pwm1=50;pwm2=50;
+					}
+				}
+			break;
+			case S_FIJO:
+				if(timers[TSHARP1]==0){
+					if(adc_buf[4]>2500)
+						timers[TSHARP1]=10;
+					else{
+						st_sharp1=S_BUSCANDO;
+						st_motores=BUSCANDO;
+						timers[TSHARP1]=10;
+						encontrado='0';
+						pwm1=50;pwm2=50;
+						//HAL_ADC_Stop(&hadc1);
+					}
+				}
+			break;
+		}
+}
+
+void sharp2_process(){
+		switch(st_sharp2){
+			case S_BUSCANDO:
+				if(timers[TSHARP2]==0){
+					if(adc_buf[5]>2500){
+						st_sharp2=S_FIJO;
+						st_motores=ATACANDO_ADELANTE;
+						timers[TSHARP2]=10;
+						encontrado='2';
+						pwm1=50;pwm2=50;
+					}
+				}
+			break;
+			case S_FIJO:
+				if(timers[TSHARP2]==0){
+					if(adc_buf[5]>2500)
+						timers[TSHARP2]=10;
+					else{
+						st_sharp2=S_BUSCANDO;
+						st_motores=BUSCANDO;
+						timers[TSHARP2]=10;
+						encontrado='0';
+						pwm1=50;pwm2=50;
+						//HAL_ADC_Stop(&hadc1);
+					}
+				}
+			break;
+		}
+}
 void CDC_Receive_Callback(uint8_t *buf,uint32_t len){
 	memcpy(buffer+indice,buf,len);
 	indice=indice+len;
@@ -503,6 +818,9 @@ void CDC_Receive_Callback(uint8_t *buf,uint32_t len){
 	}
 
 }
+
+
+//HAL_GPIO_ReadPin(GPIOB,Pulsador2_PB13_Pin)==GPIO_PIN_RESET
 /* USER CODE END 4 */
 
 /**
